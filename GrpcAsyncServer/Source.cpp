@@ -27,6 +27,7 @@ namespace Chat
 		{
 			for (auto stream : streams) if (stream != exclude)
 				stream->Write(msg);
+			std::cout << msg.value() << "\n";
 		}
 
 		Status Message(ServerContext*, const ChatMessage* request, ChatMessage* response) override
@@ -65,7 +66,7 @@ namespace Chat
 		{
 			using namespace std::string_literals;
 			std::ostringstream ss;
-			ss << stream << "Connected.";
+			ss << stream << " Connected.";
 			ChatMessage msg;
 			msg.set_value(ss.str());
 			WriteToAll(msg, stream);
@@ -73,6 +74,8 @@ namespace Chat
 
 			while (stream->Read(&msg))
 			{
+				if (msg.value() == "$throw")
+					throw std::runtime_error("Throwed by user.");
 				ss.clear();
 				ss.str("");
 				ss << stream << ": " << msg.value();
@@ -84,7 +87,7 @@ namespace Chat
 
 			ss.clear();
 			ss.str("");
-			ss << stream << "Disconnected.";
+			ss << stream << " Disconnected.";
 			msg.set_value(ss.str());
 			WriteToAll(msg, stream);
 			
@@ -103,7 +106,7 @@ int main(int argc, char* argv[])
 	ChatAsyncService service;
 
 	auto cq = builder
-		.AddListeningPort("localhost:51500", grpc::InsecureServerCredentials())
+		.AddListeningPort("localhost:50051", grpc::InsecureServerCredentials())
 		.RegisterService(&service)
 		.AddCompletionQueue();
 
@@ -111,7 +114,11 @@ int main(int argc, char* argv[])
 
 	GrpcAsync::ServiceBinder binder(cq.get());
 
-	binder.AddExceptionHandler(+[](std::exception& e) { return grpc::Status{ grpc::ABORTED, "exception", e.what() }; });
+	binder.AddExceptionHandler(+[](std::exception& e)
+	{
+		std::cout << e.what() << "\n";
+		return grpc::Status{ grpc::ABORTED, "exception", e.what() };
+	});
 	
 	service.Bind(binder);
 	
@@ -119,7 +126,7 @@ int main(int argc, char* argv[])
 	bool ok;
 	do
 	{
-		printf("Server running...\r");
+		//std::cout << "Server running...\r";
 		if (cq->AsyncNext(&tag, &ok, std::chrono::system_clock::now()) == grpc::CompletionQueue::TIMEOUT)
 			continue;
 		binder.Update(tag, ok);
