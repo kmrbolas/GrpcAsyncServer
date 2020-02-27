@@ -1,10 +1,13 @@
-#ifndef UNITY_GRPC_ASYNC_H
-#define UNITY_GRPC_ASYNC_H
+#ifndef _GRPCASYNC_H
+#define _GRPCASYNC_H
 #pragma once
 
 #include <list>
+#include <vector>
+#include <memory>
 #include <functional>
 #include <optional>
+#include <exception>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/impl/codegen/async_stream.h>
 #include <grpcpp/impl/codegen/sync_stream.h>
@@ -12,17 +15,43 @@
 
 namespace GrpcAsync
 {
+	using std::list;
+	using std::vector;
+	using std::function;
+	using std::unique_ptr;
+	using std::exception;
+	using std::runtime_error;
+	using std::optional;
+	
+	using grpc::Status;
+	using grpc::CompletionQueue;
+	using grpc::ServerCompletionQueue;
+	using grpc::ServerContext;
+	using grpc::WriteOptions;
+	using grpc::ServerAsyncResponseWriter;
+	using grpc::ServerReaderInterface;
+	using grpc::ServerWriterInterface;
+	using grpc::ServerReaderWriterInterface;
+	using grpc::ServerAsyncReader;
+	using grpc::ServerAsyncWriter;
+	using grpc::ServerAsyncReaderWriter;
+	using grpc::ServerAsyncReaderInterface;
+	using grpc::ServerAsyncWriterInterface;
+	using grpc::ServerAsyncReaderWriterInterface;
+	using grpc::internal::AsyncReaderInterface;
+	using grpc::internal::AsyncWriterInterface;
+	
 	template<class Base, class Req, class Res>
-	using Request_t = void(Base::*)(grpc::ServerContext*, Req*, Res*, grpc::CompletionQueue*, grpc::ServerCompletionQueue*, void*);
+	using Request_t = void(Base::*)(ServerContext*, Req*, Res*, CompletionQueue*, ServerCompletionQueue*, void*);
 
 	template<class Base, class ReqRes>
-	using RequestSingle_t = void(Base::*)(grpc::ServerContext*, ReqRes*, grpc::CompletionQueue*, grpc::ServerCompletionQueue*, void*);
+	using RequestSingle_t = void(Base::*)(ServerContext*, ReqRes*, CompletionQueue*, ServerCompletionQueue*, void*);
 
 	template<class Req, class Res = void>
-	struct RequestFn_s { using type = std::function<void(grpc::ServerContext*, Req*, Res*, grpc::CompletionQueue*, grpc::ServerCompletionQueue*, void*)>; };
+	struct RequestFn_s { using type = function<void(ServerContext*, Req*, Res*, CompletionQueue*, ServerCompletionQueue*, void*)>; };
 	
 	template<class ReqRes>
-	struct RequestFn_s<ReqRes, void> { using type = std::function<void(grpc::ServerContext*, ReqRes*, grpc::CompletionQueue*, grpc::ServerCompletionQueue*, void*)>; };
+	struct RequestFn_s<ReqRes, void> { using type = function<void(ServerContext*, ReqRes*, CompletionQueue*, ServerCompletionQueue*, void*)>; };
 
 	template<class Req, class Res = void>
 	using RequestFn_t = typename RequestFn_s<Req, Res>::type;
@@ -47,16 +76,16 @@ namespace GrpcAsync
 		void yield() const;
 
 		template<class Fn, class... Args>
-		auto try_handle(Fn fn, Args&&... args);
+		decltype(auto) try_handle(Fn fn, Args&&... args);
 
 	protected:
 		ServiceBinder* const binder;
 	};
 
 	template<class R>
-	struct CoBasicServerAsyncReader : Yielder, grpc::ServerReaderInterface<R>
+	struct CoBasicServerAsyncReader : Yielder, ServerReaderInterface<R>
 	{
-		CoBasicServerAsyncReader(Yielder yielder, grpc::internal::AsyncReaderInterface<R>* reader_interface) : Yielder(yielder), reader(reader_interface) {  }
+		CoBasicServerAsyncReader(Yielder yielder, AsyncReaderInterface<R>* reader_interface) : Yielder(yielder), reader(reader_interface) {  }
 
 		bool Read(R* msg) final
 		{
@@ -83,25 +112,25 @@ namespace GrpcAsync
 			return true;
 		}
 
-		void SendInitialMetadata() override { throw std::runtime_error("Not implemented."); }
+		void SendInitialMetadata() override { throw runtime_error("Not implemented."); }
 
 	protected:
-		grpc::internal::AsyncReaderInterface<R>* const reader;
+		AsyncReaderInterface<R>* const reader;
 	private:
-		std::optional<R> currentMsg;
+		optional<R> currentMsg;
 	};
 
 	template<class W>
-	struct CoBasicServerAsyncWriter : Yielder, grpc::ServerWriterInterface<W>
+	struct CoBasicServerAsyncWriter : Yielder, ServerWriterInterface<W>
 	{
-		using grpc::ServerWriterInterface<W>::Write;
-		using grpc::ServerWriterInterface<W>::WriteLast;
+		using ServerWriterInterface<W>::Write;
+		using ServerWriterInterface<W>::WriteLast;
 
-		CoBasicServerAsyncWriter(Yielder yielder, grpc::internal::AsyncWriterInterface<W>* writer) : Yielder(yielder), writer(writer) {  }
+		CoBasicServerAsyncWriter(Yielder yielder, AsyncWriterInterface<W>* writer) : Yielder(yielder), writer(writer) {  }
 
-		void SendInitialMetadata() override { throw std::runtime_error("Not implemented."); }
+		void SendInitialMetadata() override { throw runtime_error("Not implemented."); }
 
-		bool Write(const W& msg, grpc::WriteOptions options) final
+		bool Write(const W& msg, WriteOptions options) final
 		{
 			writer->Write(msg, options, tag());
 			yield();
@@ -109,16 +138,16 @@ namespace GrpcAsync
 		}
 
 	protected:
-		grpc::internal::AsyncWriterInterface<W>* const writer;
+		AsyncWriterInterface<W>* const writer;
 	};
 
 	template<class W>
 	struct CoServerAsyncWriter final : CoBasicServerAsyncWriter<W>
 	{
-		using grpc::ServerWriterInterface<W>::Write;
-		using grpc::ServerWriterInterface<W>::WriteLast;
+		using ServerWriterInterface<W>::Write;
+		using ServerWriterInterface<W>::WriteLast;
 
-		CoServerAsyncWriter(Yielder yielder, grpc::ServerAsyncWriterInterface<W>* writer) : CoBasicServerAsyncWriter<W>(yielder, writer) {  }
+		CoServerAsyncWriter(Yielder yielder, ServerAsyncWriterInterface<W>* writer) : CoBasicServerAsyncWriter<W>(yielder, writer) {  }
 
 		void SendInitialMetadata() override
 		{
@@ -126,14 +155,14 @@ namespace GrpcAsync
 			this->yield();
 		}
 
-		void Finish(const grpc::Status& status) const
+		void Finish(const Status& status) const
 		{
 			get()->Finish(status, this->tag());
 			this->yield();
 		}
 		
 	private:
-		auto get() const { return static_cast<grpc::ServerAsyncWriterInterface<W>*>(this->writer); }
+		auto get() const { return static_cast<ServerAsyncWriterInterface<W>*>(this->writer); }
 	};
 	
 	template<class W, class R>
@@ -142,7 +171,7 @@ namespace GrpcAsync
 		using CoBasicServerAsyncReader<R>::yield;
 		using CoBasicServerAsyncReader<R>::tag;
 
-		CoServerAsyncReader(Yielder yielder, grpc::ServerAsyncReaderInterface<W, R>* reader) : CoBasicServerAsyncReader<R>(yielder, reader) {  }
+		CoServerAsyncReader(Yielder yielder, ServerAsyncReaderInterface<W, R>* reader) : CoBasicServerAsyncReader<R>(yielder, reader) {  }
 
 		void SendInitialMetadata() override
 		{
@@ -150,29 +179,29 @@ namespace GrpcAsync
 			yield();
 		}
 
-		void Finish(const W& msg, const grpc::Status& status)
+		void Finish(const W& msg, const Status& status)
 		{
 			get()->Finish(msg, status, tag());
 			yield();
 		}
 
-		void FinishWithError(const grpc::Status& status)
+		void FinishWithError(const Status& status)
 		{
 			get()->FinishWithError(status, tag());
 			yield();
 		}
 
 	private:
-		auto get() const { return static_cast<grpc::ServerAsyncReaderInterface<W, R>*>(this->reader); }
+		auto get() const { return static_cast<ServerAsyncReaderInterface<W, R>*>(this->reader); }
 	};
 
 	template<class W, class R>
-	struct CoServerAsyncReaderWriter final : Yielder, grpc::ServerReaderWriterInterface<W, R>
+	struct CoServerAsyncReaderWriter final : Yielder, ServerReaderWriterInterface<W, R>
 	{
-		using grpc::ServerReaderWriterInterface<W, R>::Write;
-		using grpc::ServerReaderWriterInterface<W, R>::WriteLast;
+		using ServerReaderWriterInterface<W, R>::Write;
+		using ServerReaderWriterInterface<W, R>::WriteLast;
 
-		CoServerAsyncReaderWriter(ServiceBinder* binder, grpc::ServerAsyncReaderWriterInterface<W, R>* rw) : Yielder(binder), rw(rw), reader(binder, rw), writer(binder, rw) {  }
+		CoServerAsyncReaderWriter(ServiceBinder* binder, ServerAsyncReaderWriterInterface<W, R>* rw) : Yielder(binder), rw(rw), reader(binder, rw), writer(binder, rw) {  }
 
 		void SendInitialMetadata() override
 		{
@@ -184,16 +213,16 @@ namespace GrpcAsync
 
 		bool NextMessageSize(uint32_t* sz) override { return reader.NextMessageSize(sz); }
 
-		bool Write(const W& msg, grpc::WriteOptions options) override { return writer.Write(msg, options); }
+		bool Write(const W& msg, WriteOptions options) override { return writer.Write(msg, options); }
 
-		void Finish(grpc::Status status)
+		void Finish(Status status)
 		{
 			rw->Finish(status, tag());
 			yield();
 		}
 
 	private:
-		grpc::ServerAsyncReaderWriterInterface<W, R>* rw;
+		ServerAsyncReaderWriterInterface<W, R>* rw;
 		CoBasicServerAsyncReader<R> reader;
 		CoBasicServerAsyncWriter<W> writer;
 	};
@@ -212,15 +241,15 @@ namespace GrpcAsync
 		
 		void Release() { released = true; }
 		
-		grpc::ServerCompletionQueue* GetCQ() const;
+		ServerCompletionQueue* GetCQ() const;
 		
-		grpc::ServerContext ctx;
+		ServerContext ctx;
 
 	private:
 		bool Update();
 
 		bool released;
-		std::unique_ptr<ICoroutine> coroutine;
+		unique_ptr<ICoroutine> coroutine;
 	};
 
 	template<class Req, class Res>
@@ -229,8 +258,8 @@ namespace GrpcAsync
 		using Request = Req;
 		using Response = Res;
 
-		using RequestFn = RequestFn_t<Request, grpc::ServerAsyncResponseWriter<Response>>;
-		using Fn = std::function<grpc::Status(grpc::ServerContext*, const Request*, Response*)>;
+		using RequestFn = RequestFn_t<Request, ServerAsyncResponseWriter<Response>>;
+		using Fn = function<Status(ServerContext*, const Request*, Response*)>;
 
 		MethodBinding(Yielder yielder, RequestFn rFn, Fn fn) : RPCBinding(yielder), rFn(move(rFn)), fn(move(fn)), responder(&ctx)
 		{
@@ -259,7 +288,7 @@ namespace GrpcAsync
 	private:
 		RequestFn rFn;
 		Fn fn;
-		grpc::ServerAsyncResponseWriter<Response> responder;
+		ServerAsyncResponseWriter<Response> responder;
 		Request req;
 	};
 
@@ -269,8 +298,8 @@ namespace GrpcAsync
 		using Request = Req;
 		using Response = Res;
 
-		using RequestFn = RequestFn_t<Request, grpc::ServerAsyncWriter<Response>>;
-		using Fn = std::function<grpc::Status(grpc::ServerContext*, const Request*, grpc::ServerWriterInterface<Response>*)>;
+		using RequestFn = RequestFn_t<Request, ServerAsyncWriter<Response>>;
+		using Fn = function<Status(ServerContext*, const Request*, ServerWriterInterface<Response>*)>;
 
 		ServerStreamingBinding(Yielder yielder, RequestFn rFn, Fn fn) : RPCBinding(yielder), rFn(move(rFn)), fn(move(fn)), writer(&ctx)
 		{
@@ -292,7 +321,7 @@ namespace GrpcAsync
 	private:
 		RequestFn rFn;
 		Fn fn;
-		grpc::ServerAsyncWriter<Response> writer;
+		ServerAsyncWriter<Response> writer;
 		Request req;
 	};
 
@@ -302,8 +331,8 @@ namespace GrpcAsync
 		using Request = Req;
 		using Response = Res;
 
-		using RequestFn = RequestFn_t<grpc::ServerAsyncReader<Response, Request>>;
-		using Fn = std::function<grpc::Status(grpc::ServerContext*, grpc::ServerReaderInterface<Request>*, Response*)>;
+		using RequestFn = RequestFn_t<ServerAsyncReader<Response, Request>>;
+		using Fn = function<Status(ServerContext*, ServerReaderInterface<Request>*, Response*)>;
 
 		ClientStreamingBinding(Yielder yielder, RequestFn rFn, Fn fn) : RPCBinding(yielder), rFn(move(rFn)), fn(move(fn)), reader(&ctx)
 		{
@@ -328,7 +357,7 @@ namespace GrpcAsync
 	private:
 		RequestFn rFn;
 		Fn fn;
-		grpc::ServerAsyncReader<Response, Request> reader;
+		ServerAsyncReader<Response, Request> reader;
 	};
 
 	template<class Req, class Res>
@@ -337,8 +366,8 @@ namespace GrpcAsync
 		using Request = Req;
 		using Response = Res;
 
-		using RequestFn = RequestFn_t<grpc::ServerAsyncReaderWriter<Response, Request>>;
-		using Fn = std::function<grpc::Status(grpc::ServerContext*, grpc::ServerReaderWriterInterface<Response, Request>*)>;
+		using RequestFn = RequestFn_t<ServerAsyncReaderWriter<Response, Request>>;
+		using Fn = function<Status(ServerContext*, ServerReaderWriterInterface<Response, Request>*)>;
 
 		BidirectionalStreamingBinding(Yielder yielder, RequestFn rFn, Fn fn) : RPCBinding(yielder), rFn(move(rFn)), fn(move(fn)), readerWriter(&ctx)
 		{
@@ -360,7 +389,7 @@ namespace GrpcAsync
 	private:
 		RequestFn rFn;
 		Fn fn;
-		grpc::ServerAsyncReaderWriter<Response, Request> readerWriter;
+		ServerAsyncReaderWriter<Response, Request> readerWriter;
 	};
 
 	struct ServiceBinder final
@@ -368,71 +397,68 @@ namespace GrpcAsync
 		friend RPCBinding;
 		friend Yielder;
 		
-		ServiceBinder(grpc::ServerCompletionQueue* cq) : cq(cq), tag_(nullptr), ok_(false), coroutine(nullptr), handler([](auto&fn) { return fn(); }) {  }
+		ServiceBinder(ServerCompletionQueue* cq) : cq(cq), tag_(nullptr), ok_(false), coroutine(nullptr) {  }
 		
-		ServiceBinder(const std::unique_ptr<grpc::ServerCompletionQueue>& cq) : ServiceBinder(cq.get()) {  }
+		ServiceBinder(const unique_ptr<ServerCompletionQueue>& cq) : ServiceBinder(cq.get()) {  }
 
 		void Update(void* tag, bool ok);
 
 		template<class Service, class Base, class Req, class Res, class Fn>
-		auto Bind(Service* service, Request_t<Base, Req, grpc::ServerAsyncResponseWriter<Res>> rFn, Fn fn)
+		auto Bind(Service* service, Request_t<Base, Req, ServerAsyncResponseWriter<Res>> rFn, Fn fn)
 		{
 			using namespace std::placeholders;
-			return new MethodBinding<Req, Res>(this, std::bind(rFn, service, _1, _2, _3, _4, _5, _6), std::bind(fn, service, _1, _2, _3));
+			return new MethodBinding<Req, Res>(this, bind(rFn, service, _1, _2, _3, _4, _5, _6), bind(fn, service, _1, _2, _3));
 		}
 		
 		template<class Service, class Base, class Req, class Res, class Fn>
-		auto Bind(Service* service, Request_t<Base, Req, grpc::ServerAsyncWriter<Res>> rFn, Fn fn)
+		auto Bind(Service* service, Request_t<Base, Req, ServerAsyncWriter<Res>> rFn, Fn fn)
 		{
 			using namespace std::placeholders;
-			return new ServerStreamingBinding<Req, Res>(this, std::bind(rFn, service, _1, _2, _3, _4, _5, _6), std::bind(fn, service, _1, _2, _3));
+			return new ServerStreamingBinding<Req, Res>(this, bind(rFn, service, _1, _2, _3, _4, _5, _6), bind(fn, service, _1, _2, _3));
 		}
 		
 		template<class Service, class Base, class Req, class Res, class Fn>
-		auto Bind(Service* service, RequestSingle_t<Base, grpc::ServerAsyncReader<Req, Res>> rFn, Fn fn)
+		auto Bind(Service* service, RequestSingle_t<Base, ServerAsyncReader<Req, Res>> rFn, Fn fn)
 		{
 			using namespace std::placeholders;
-			return new ClientStreamingBinding<Req, Res>(this, std::bind(rFn, service, _1, _2, _3, _4, _5), std::bind(fn, service, _1, _2, _3));
+			return new ClientStreamingBinding<Req, Res>(this, bind(rFn, service, _1, _2, _3, _4, _5), bind(fn, service, _1, _2, _3));
 		}
 
 		template<class Service, class Base, class Req, class Res, class Fn>
-		auto Bind(Service* service, RequestSingle_t<Base, grpc::ServerAsyncReaderWriter<Req, Res>> rFn, Fn fn)
+		auto Bind(Service* service, RequestSingle_t<Base, ServerAsyncReaderWriter<Req, Res>> rFn, Fn fn)
 		{
 			using namespace std::placeholders;
-			return new BidirectionalStreamingBinding<Req, Res>(this, std::bind(rFn, service, _1, _2, _3, _4, _5), std::bind(fn, service, _1, _2));
+			return new BidirectionalStreamingBinding<Req, Res>(this, bind(rFn, service, _1, _2, _3, _4, _5), bind(fn, service, _1, _2));
 		}
 
 		template<class Ex>
-		ServiceBinder& AddExceptionHandler(std::function<grpc::Status(Ex&)> fn)
+		ServiceBinder& AddExceptionHandler(function<Status(Ex&)> fn)
 		{
-			handler = [handler = move(handler), h = move(fn)](auto& fn)
-			{
-				try { return handler(fn); }
-				catch (Ex& e) { return h(e); }
-			};
+			static_assert(std::is_base_of_v<exception, Ex>, "Exception must derive from exception!");
+			handlers.emplace_back([fn = move(fn)](exception& e) { return fn(dynamic_cast<Ex&>(e)); });
 			return *this;
 		}
 		
 		template<class Ex, class Fn>
 		ServiceBinder& AddExceptionHandler(Fn fn)
 		{
-			return AddExceptionHandler(std::function<grpc::Status(Ex&)>(fn));
+			return AddExceptionHandler(function<Status(Ex&)>(fn));
 		}
 
 		template<class Ex>
-		ServiceBinder& AddExceptionHandler(grpc::Status(*fn)(Ex&))
+		ServiceBinder& AddExceptionHandler(Status(*fn)(Ex&))
 		{
 			return AddExceptionHandler<Ex, decltype(fn)>(fn);
 		}
 
 	private:
 
-		grpc::ServerCompletionQueue* const cq;
-		std::list<std::unique_ptr<RPCBinding>> bindings;
+		ServerCompletionQueue* const cq;
+		list<unique_ptr<RPCBinding>> bindings;
 		void* tag_;
 		bool ok_;
 		ICoroutine* coroutine;
-		std::function<grpc::Status(const std::function<grpc::Status()>&)> handler;
+		vector<function<Status(exception&)>> handlers;
 	};
 
 	inline void* Yielder::tag() const { return binder->tag_; }
@@ -441,10 +467,25 @@ namespace GrpcAsync
 
 	inline void Yielder::yield() const { binder->coroutine->yield(); }
 
-	inline grpc::ServerCompletionQueue* RPCBinding::GetCQ() const { return binder->cq; }
+	inline ServerCompletionQueue* RPCBinding::GetCQ() const { return binder->cq; }
 
 	template <class Fn, class... Args>
-	auto Yielder::try_handle(Fn fn, Args&&... args) { return binder->handler(std::bind(fn, std::forward<Args>(args)...)); }
+	decltype(auto) Yielder::try_handle(Fn fn, Args&&... args)
+	{
+		try
+		{
+			return fn(std::forward<Args>(args)...);
+		}
+		catch (exception& e)
+		{
+			for (auto& handler : binder->handlers) try
+			{
+				return handler(e);
+			}
+			catch (std::bad_cast&) {  }
+			throw;
+		}
+	}
 	
 }
 

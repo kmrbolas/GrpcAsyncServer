@@ -4,7 +4,9 @@
 
 namespace Chat
 {
-
+	using grpc::Status;
+	using grpc::ServerContext;
+	
 	struct ChatAsyncService : ChatService::AsyncService
 	{
 		void Bind(GrpcAsync::ServiceBinder& binder)
@@ -27,7 +29,7 @@ namespace Chat
 				stream->Write(msg);
 		}
 
-		grpc::Status Message(grpc::ServerContext*, const ChatMessage* request, ChatMessage* response) override
+		Status Message(ServerContext*, const ChatMessage* request, ChatMessage* response) override
 		{
 			if (request->value() == "$quit")
 			{
@@ -35,20 +37,20 @@ namespace Chat
 				response->set_value("Server Closed.");
 			}
 			else *response = *request;
-			return grpc::Status::OK;
+			return Status::OK;
 		}
 		
-		grpc::Status ClientStreamingMessage(grpc::ServerContext*, grpc::ServerReaderInterface<ChatMessage>* reader, ChatMessage* response) /*override*/
+		Status ClientStreamingMessage(ServerContext*, grpc::ServerReaderInterface<ChatMessage>* reader, ChatMessage* response) /*override*/
 		{
 			std::ostringstream ss;
 			ChatMessage msg;
 			while (reader->Read(&msg))
 				ss << msg.value() << std::endl;
 			response->set_value(ss.str());
-			return grpc::Status::OK;
+			return Status::OK;
 		}
 		
-		grpc::Status ServerStreamingMessage(grpc::ServerContext*, const ChatMessage* request, grpc::ServerWriterInterface<ChatMessage>* writer) /*override*/
+		Status ServerStreamingMessage(ServerContext*, const ChatMessage* request, grpc::ServerWriterInterface<ChatMessage>* writer) /*override*/
 		{
 			using namespace std::chrono_literals;
 			for (int i = 0; i < 5; ++i)
@@ -56,10 +58,10 @@ namespace Chat
 				std::this_thread::sleep_for(.2s); //This will indeed block the main thread. lets just pretend is a expensive calculation.
 				writer->Write(*request);
 			}
-			return grpc::Status::OK;
+			return Status::OK;
 		}
 		
-		grpc::Status Chat(grpc::ServerContext*, grpc::ServerReaderWriterInterface<ChatMessage, ChatMessage>* stream) /*override*/
+		Status Chat(ServerContext*, grpc::ServerReaderWriterInterface<ChatMessage, ChatMessage>* stream) /*override*/
 		{
 			using namespace std::string_literals;
 			std::ostringstream ss;
@@ -86,7 +88,7 @@ namespace Chat
 			msg.set_value(ss.str());
 			WriteToAll(msg, stream);
 			
-			return grpc::Status::OK;
+			return Status::OK;
 		}
 		
 	};

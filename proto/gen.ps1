@@ -1,21 +1,37 @@
-param([string] $file, [string] $lang = "cpp", [bool] $nogrpc = $false, [string] $outputDir)
+param([string] $file, [string] $lang = "cpp", [switch] $nogrpc, [string] $outputDir)
 
-$includePath = "C:\vcpkg\installed\x64-windows-static\include"
-$pluginPath = "C:\vcpkg\installed\x64-windows-static\tools\grpc\"
+if ($Env:OS -eq "Windows_NT")
+{
+    $protoc = "C:\vcpkg\installed\x64-windows-static\tools\protobuf\protoc.exe"
+    $includePath = "C:\vcpkg\installed\x64-windows-static\include\"
+    $pluginPath = "C:\vcpkg\installed\x64-windows-static\tools\grpc\"
+}
+else
+{
+    $protoc = "/opt/special32/protoc"
+    $includePath = "/opt/include32/"
+    $pluginPath = "/opt/special32/"
+}
 
 function FileExists([string] $file) { return Test-Path $file -PathType Leaf }
 
-function CopyIfDiffer([string] $file, [string] $dst) {
-    $h1 = (Get-FileHash $file -Algorithm MD5 | Select-Object).Hash
+function FileEqual([string] $f1, [string] $f2)
+{
+	return (FileExists $f2) -and ((Get-Item $f1).Length -eq (Get-Item $f2).Length) -and ((Get-FileHash $f1 -Algorithm SHA1 | Select-Object).Hash -eq (Get-FileHash $f2 -Algorithm SHA1 | Select-Object).Hash)
+}
+
+function CopyIfDiffer([string] $file, [string] $dst)
+{
     $dstFile = (Join-Path $dst $file);
-    $h2 = if (Test-Path -Path $dstFile) { (Get-FileHash $dstFile -Algorithm MD5 | Select-Object).Hash }
-    else { $null }
-    if ($h1 -ne $h2)
+    if (FileEqual (Join-Path $PSScriptRoot $file) $dstFile)
+    {
+        Write-Host "Skipping copy of $($file) to the destination $($dstFile), both file hashes match."
+    }
+    else
     {
         Copy-Item -Path $file -Destination $dst -Force
         Write-Host "File $($file) copied to the destination $($dst)."
     }
-    else { Write-Host "Skipping copy of $($file) to the destination $($dstFile), both file hashes match." }
 }
 
 $ffile = [System.IO.Path]::GetFileNameWithoutExtension($file)
@@ -61,47 +77,20 @@ if (!(FileExists($file)) -and !(FileExists("$($file).proto")))
 
 $file = [System.IO.Path]::ChangeExtension($file, ".proto")
 
-$hash = (Get-FileHash $file -Algorithm MD5 | Select-Object).Hash
-$hashPath = "$($file).hash"
+$params = if ($nogrpc) { "$file --$($lang)_out=. --proto_path=. --proto_path=$includePath" }
+else { "$file --grpc_out=. --$($lang)_out=. --plugin=protoc-gen-grpc=$($pluginPath)grpc_$($lang)_plugin.exe --proto_path=. --proto_path=$includePath" }
 
-if (!(Test-Path $hashPath -PathType Leaf))
+& "$protoc" $params.Split(" ")
+
+if ($LastExitCode -eq 0)
 {
-    $savedHash = $null
-    Write-Host "Hash file not found."
-}
-elseif (($arr = TestGeneratedFiles($file)).Length -ne 0)
-{
-    Write-Host "Files not found:"
-    foreach ($f in $arr)
-    {
-        Write-Host $f
-    }
-    $savedHash = $null
+    $hash > $hashPath
+    Write-Host "Files generated successfully"
 }
 else
 {
-    $savedHash = (Get-Item -Path $hashPath) | Get-Content -First 1
-}
-
-if (!($savedHash -eq $hash))
-{
-    if ($nogrpc) { protoc $file --grpc_out=. "--$($lang)_out=." --proto_path=. --proto_path=$includePath }
-    else { protoc $file --grpc_out=. "--$($lang)_out=." --plugin=protoc-gen-grpc="$($pluginPath)grpc_$($lang)_plugin.exe"  --proto_path=. --proto_path=$includePath }
-    
-    if ($LastExitCode -eq 0)
-    {
-        $hash > $hashPath
-        Write-Host "Files generated successfully"
-    }
-    else
-    {
-        Write-Host "Error while executing protoc, exit code: $($LastExitCode)."
-    }
-}
-else
-{
-    Write-Host "The files are already updated."
-    $LastExitCode = 0
+    Write-Host "Error while executing protoc, exit code: $($LastExitCode)."
+    exit $LastExitCode;
 }
 
 if (($outputDir.Length -ne 0) -and (Test-Path $outputDir))
@@ -112,4 +101,4 @@ if (($outputDir.Length -ne 0) -and (Test-Path $outputDir))
     }
 }
 
-exit $LastExitCode
+exit 0

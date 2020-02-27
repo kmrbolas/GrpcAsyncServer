@@ -3,11 +3,11 @@
 
 namespace GrpcAsync
 {
-	struct Coroutine final : ICoroutine
+	struct BoostCoroutine final : ICoroutine
 	{
 		using yield_t = boost::coroutines::symmetric_coroutine<void>::yield_type;
 		using call_t = boost::coroutines::symmetric_coroutine<void>::call_type;
-		Coroutine(std::function<void()> fn) : yielder(nullptr),
+		BoostCoroutine(std::function<void()> fn) : yielder(nullptr),
 		call([this, fn = move(fn)](yield_t& yield)
 		{
 			yielder = &yield;
@@ -33,7 +33,7 @@ namespace GrpcAsync
 		call_t call;
 	};
 
-	RPCBinding::RPCBinding(Yielder yielder) : Yielder(yielder), released(false), coroutine(new Coroutine(std::bind(&RPCBinding::Execute, this)))
+	RPCBinding::RPCBinding(Yielder yielder) : Yielder(yielder), released(false), coroutine(new BoostCoroutine(std::bind(&RPCBinding::Execute, this)))
 	{
 		binder->bindings.emplace_back(this);
 	}
