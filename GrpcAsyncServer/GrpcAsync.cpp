@@ -37,7 +37,12 @@ namespace GrpcAsync
 	{
 		binder->bindings.emplace_back(this);
 	}
-	
+
+	RPCBinding::RPCBinding(const RPCBinding& binding) : RPCBinding(binding.binder)
+	{
+		
+	}
+
 	bool RPCBinding::Update()
 	{
 		if (tag() != this)

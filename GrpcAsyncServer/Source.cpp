@@ -2,6 +2,8 @@
 #include "GrpcAsync.h"
 #include "generated/chat.grpc.pb.h"
 
+#include <fmt/format.h>
+
 namespace Chat
 {
 	using grpc::Status;
@@ -100,10 +102,8 @@ namespace Chat
 
 int main(int argc, char* argv[])
 {
-	using Chat::ChatAsyncService;
-
 	grpc::ServerBuilder builder;
-	ChatAsyncService service;
+	Chat::ChatAsyncService service;
 
 	auto cq = builder
 		.AddListeningPort("localhost:50051", grpc::InsecureServerCredentials())
@@ -114,7 +114,7 @@ int main(int argc, char* argv[])
 
 	GrpcAsync::ServiceBinder binder(cq.get());
 
-	binder.AddExceptionHandler(+[](std::exception& e)
+	binder.AddExceptionHandler(+[](std::runtime_error& e)
 	{
 		std::cout << e.what() << "\n";
 		return grpc::Status{ grpc::ABORTED, "exception", e.what() };

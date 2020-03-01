@@ -8,6 +8,8 @@
 #include <functional>
 #include <optional>
 #include <exception>
+#include <type_traits>
+
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/impl/codegen/async_stream.h>
 #include <grpcpp/impl/codegen/sync_stream.h>
@@ -22,6 +24,8 @@ namespace GrpcAsync
 	using std::exception;
 	using std::runtime_error;
 	using std::optional;
+	using std::type_info;
+	using std::tuple;
 	
 	using grpc::Status;
 	using grpc::CompletionQueue;
@@ -40,7 +44,7 @@ namespace GrpcAsync
 	using grpc::ServerAsyncReaderWriterInterface;
 	using grpc::internal::AsyncReaderInterface;
 	using grpc::internal::AsyncWriterInterface;
-	
+
 	template<class Base, class Req, class Res>
 	using Request_t = void(Base::*)(ServerContext*, Req*, Res*, CompletionQueue*, ServerCompletionQueue*, void*);
 
@@ -74,9 +78,6 @@ namespace GrpcAsync
 		bool ok() const;
 
 		void yield() const;
-
-		template<class Fn, class... Args>
-		decltype(auto) try_handle(Fn fn, Args&&... args);
 
 	protected:
 		ServiceBinder* const binder;
@@ -227,15 +228,66 @@ namespace GrpcAsync
 		CoBasicServerAsyncWriter<W> writer;
 	};
 
-	struct RPCBinding : Yielder
+	struct ExceptionHandler
+	{
+		template<class Ex>
+		void AddExceptionHandler(function<Status(Ex&)> fn)
+		{
+			static_assert(std::is_base_of_v<exception, Ex>, "Exception must derive from exception!");
+			handlers.emplace_back([fn = move(fn)](exception& e) { return fn(dynamic_cast<Ex&>(e)); });
+		}
+
+		template<class Ex, class Fn>
+		void AddExceptionHandler(Fn fn)
+		{
+			return AddExceptionHandler(function<Status(Ex&)>(fn));
+		}
+
+		template<class Ex>
+		void AddExceptionHandler(Status(*fn)(Ex&))
+		{
+			return AddExceptionHandler<Ex, decltype(fn)>(fn);
+		}
+		
+	protected:
+		template<class Fn, class... Args>
+		decltype(auto) try_handle(Fn&& fn, Args&&... args) const
+		{
+			try
+			{
+				return fn(std::forward<Args>(args)...);
+			}
+			catch (exception& e)
+			{
+				for (auto& handler : handlers) try
+				{
+					return handler(e);
+				}
+				catch (std::bad_cast&) {  }
+				throw;
+			}
+		}
+		
+	private:
+		vector<function<Status(exception&)>> handlers;
+	};
+
+	struct RPCBinding : protected Yielder, private ExceptionHandler
 	{
 		friend ServiceBinder;
 
-		RPCBinding(Yielder yielder);
+		using ExceptionHandler::AddExceptionHandler;
 
 		virtual ~RPCBinding() = default;
 
 	protected:
+
+		RPCBinding(Yielder yielder);
+
+		RPCBinding(const RPCBinding&);
+
+		template<class Fn, class... Args>
+		decltype(auto) try_handle(Fn&& fn, Args&&... args) const;
 
 		virtual void Execute() = 0;
 		
@@ -270,7 +322,7 @@ namespace GrpcAsync
 
 		void Execute() override
 		{
-			new MethodBinding(binder, rFn, fn);
+			new MethodBinding(*this);
 			if (ok())
 			{
 				Response res;
@@ -312,7 +364,7 @@ namespace GrpcAsync
 
 		void Execute() override
 		{
-			new ServerStreamingBinding(binder, rFn, fn);
+			new ServerStreamingBinding(*this);
 			CoServerAsyncWriter<Response> w(binder, &writer);
 			w.Finish(try_handle(fn, &ctx, &req, &w));
 			Release();
@@ -345,7 +397,7 @@ namespace GrpcAsync
 
 		void Execute() override
 		{
-			new ClientStreamingBinding(binder, rFn, fn);
+			new ClientStreamingBinding(*this);
 			Response msg;
 			CoServerAsyncReader<Response, Request> r(binder, &reader);
 			auto status = try_handle(fn, &ctx, &r, &msg);
@@ -380,7 +432,7 @@ namespace GrpcAsync
 
 		void Execute() override
 		{
-			new BidirectionalStreamingBinding(binder, rFn, fn);
+			new BidirectionalStreamingBinding(*this);
 			CoServerAsyncReaderWriter<Response, Request> rw(binder, &readerWriter);
 			rw.Finish(try_handle(fn, &ctx, &rw));
 			Release();
@@ -392,7 +444,7 @@ namespace GrpcAsync
 		ServerAsyncReaderWriter<Response, Request> readerWriter;
 	};
 
-	struct ServiceBinder final
+	struct ServiceBinder final : ExceptionHandler
 	{
 		friend RPCBinding;
 		friend Yielder;
@@ -404,51 +456,31 @@ namespace GrpcAsync
 		void Update(void* tag, bool ok);
 
 		template<class Service, class Base, class Req, class Res, class Fn>
-		auto Bind(Service* service, Request_t<Base, Req, ServerAsyncResponseWriter<Res>> rFn, Fn fn)
+		auto Bind(Service* service, Request_t<Base, Req, ServerAsyncResponseWriter<Res>> rFn, Fn&& fn)
 		{
 			using namespace std::placeholders;
 			return new MethodBinding<Req, Res>(this, bind(rFn, service, _1, _2, _3, _4, _5, _6), bind(fn, service, _1, _2, _3));
 		}
 		
 		template<class Service, class Base, class Req, class Res, class Fn>
-		auto Bind(Service* service, Request_t<Base, Req, ServerAsyncWriter<Res>> rFn, Fn fn)
+		auto Bind(Service* service, Request_t<Base, Req, ServerAsyncWriter<Res>> rFn, Fn&& fn)
 		{
 			using namespace std::placeholders;
 			return new ServerStreamingBinding<Req, Res>(this, bind(rFn, service, _1, _2, _3, _4, _5, _6), bind(fn, service, _1, _2, _3));
 		}
 		
 		template<class Service, class Base, class Req, class Res, class Fn>
-		auto Bind(Service* service, RequestSingle_t<Base, ServerAsyncReader<Req, Res>> rFn, Fn fn)
+		auto Bind(Service* service, RequestSingle_t<Base, ServerAsyncReader<Req, Res>> rFn, Fn&& fn)
 		{
 			using namespace std::placeholders;
 			return new ClientStreamingBinding<Req, Res>(this, bind(rFn, service, _1, _2, _3, _4, _5), bind(fn, service, _1, _2, _3));
 		}
 
 		template<class Service, class Base, class Req, class Res, class Fn>
-		auto Bind(Service* service, RequestSingle_t<Base, ServerAsyncReaderWriter<Req, Res>> rFn, Fn fn)
+		auto Bind(Service* service, RequestSingle_t<Base, ServerAsyncReaderWriter<Req, Res>> rFn, Fn&& fn)
 		{
 			using namespace std::placeholders;
 			return new BidirectionalStreamingBinding<Req, Res>(this, bind(rFn, service, _1, _2, _3, _4, _5), bind(fn, service, _1, _2));
-		}
-
-		template<class Ex>
-		ServiceBinder& AddExceptionHandler(function<Status(Ex&)> fn)
-		{
-			static_assert(std::is_base_of_v<exception, Ex>, "Exception must derive from exception!");
-			handlers.emplace_back([fn = move(fn)](exception& e) { return fn(dynamic_cast<Ex&>(e)); });
-			return *this;
-		}
-		
-		template<class Ex, class Fn>
-		ServiceBinder& AddExceptionHandler(Fn fn)
-		{
-			return AddExceptionHandler(function<Status(Ex&)>(fn));
-		}
-
-		template<class Ex>
-		ServiceBinder& AddExceptionHandler(Status(*fn)(Ex&))
-		{
-			return AddExceptionHandler<Ex, decltype(fn)>(fn);
 		}
 
 	private:
@@ -458,7 +490,6 @@ namespace GrpcAsync
 		void* tag_;
 		bool ok_;
 		ICoroutine* coroutine;
-		vector<function<Status(exception&)>> handlers;
 	};
 
 	inline void* Yielder::tag() const { return binder->tag_; }
@@ -469,22 +500,10 @@ namespace GrpcAsync
 
 	inline ServerCompletionQueue* RPCBinding::GetCQ() const { return binder->cq; }
 
-	template <class Fn, class... Args>
-	decltype(auto) Yielder::try_handle(Fn fn, Args&&... args)
+	template <class Fn, class ... Args>
+	decltype(auto) RPCBinding::try_handle(Fn&& fn, Args&&... args) const
 	{
-		try
-		{
-			return fn(std::forward<Args>(args)...);
-		}
-		catch (exception& e)
-		{
-			for (auto& handler : binder->handlers) try
-			{
-				return handler(e);
-			}
-			catch (std::bad_cast&) {  }
-			throw;
-		}
+		return binder->try_handle([&] { return ExceptionHandler::try_handle(fn, std::forward<Args>(args)...); });
 	}
 	
 }

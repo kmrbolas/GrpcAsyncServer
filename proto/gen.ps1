@@ -83,7 +83,7 @@ if ($lang -eq "cpp")
 elseif ($lang -eq "csharp")
 {
     $ffile = $ffile -replace "_", ""
-    $outputFiles += "$ffile).cs"
+    $outputFiles += "$($ffile).cs"
     $outputFiles += "$($ffile)Grpc.cs"
 }
 
